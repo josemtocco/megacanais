@@ -66,6 +66,11 @@ HOME_URL = BASE + "/"
 # Player embutido de cada canal ({canal} = nome do arquivo da logo, ex. premiere7)
 EMBED_URL = os.environ.get("MEGA_EMBED", "https://embedcanaisdetv.xyz/e/index.php?canal={canal}")
 CANAL_SONDA = os.environ.get("MEGA_CANAL_SONDA", "premiere7")
+# Opcional (Actions secret IP_BRASIL): IP brasileiro enviado nos cabecalhos
+# X-Forwarded-For & cia. So ajuda se o servidor do site confiar nesses cabecalhos.
+IP_BRASIL = os.environ.get("IP_BRASIL", "").strip()
+CAB_IP = ({"X-Forwarded-For": IP_BRASIL, "X-Real-IP": IP_BRASIL,
+           "Client-IP": IP_BRASIL, "True-Client-IP": IP_BRASIL} if IP_BRASIL else {})
 
 RAIZ = os.path.dirname(os.path.abspath(__file__))
 ARQ_LISTA = os.path.join(RAIZ, "megacanais.m3u")
@@ -156,6 +161,7 @@ def http_get(url, timeout=None, referer=None, aceitar_erro=True, extra=None):
     }
     if referer:
         headers["Referer"] = referer
+    headers.update(CAB_IP)
     if extra:
         headers.update(extra)
     req = _url.Request(url, headers=headers)
@@ -596,8 +602,10 @@ def testar_video(url, cab=None):
     cmd = [exe, "-v", "error", "-rw_timeout", "20000000",
            "-analyzeduration", "6000000", "-probesize", "3000000",
            "-user_agent", USER_AGENT]
-    if cab:
-        cmd += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in cab.items())]
+    cab_all = dict(CAB_IP)
+    cab_all.update(cab or {})
+    if cab_all:
+        cmd += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in cab_all.items())]
     cmd += ["-select_streams", "v:0", "-show_entries", "stream=codec_type",
             "-of", "csv=p=0", url]
     try:
@@ -816,6 +824,11 @@ def main():
         log()
         log(f"[ERRO] {e}")
         log("A lista anterior (se existir) foi preservada.")
+        try:
+            escrever_diagnostico([CANAL_SONDA, "sportv", "globosp"], "(automatico: coleta falhou)")
+            log(f"Gravei {os.path.basename(ARQ_DIAG)} com o que os players devolveram.")
+        except Exception as e_:
+            log(f"(não consegui gravar o diagnóstico: {e_})")
         with open(ARQ_LOG, "w", encoding="utf-8") as f:
             f.write("\n".join(LOG_LINHAS) + "\n")
         return 1
@@ -875,7 +888,7 @@ def main():
             reg["ultima_falha"] = hoje()
             reg["historico"].append({"em": hoje(), "evento": "falha", "motivo": motivo})
             reg["historico"] = reg["historico"][-10:]
-            em_falha.append({"nome": c["nome"], "motivo": motivo})
+            em_falha.append({"id": c["id"], "nome": c["nome"], "motivo": motivo})
             if reg["falhas"] >= LIMITE_FALHAS:
                 removidos.append({"nome": c["nome"], "falhas": reg["falhas"]})
             else:
@@ -934,11 +947,15 @@ def main():
         log("Motivos das falhas (mais comuns):")
         for m_, n_ in sorted(motivos.items(), key=lambda kv: -kv[1])[:5]:
             log(f"   {n_:>4}x  {m_}")
-    if canais and relatorio["tocando"] < max(3, len(canais) // 5):
-        amostra = [c["id"] for c in canais if c["id"] == CANAL_SONDA][:1]
-        amostra += [c["id"] for c in canais if c["id"] not in amostra][:2]
-        escrever_diagnostico(amostra, "(automatico: poucos canais tocando)")
-        log(f"Poucos canais tocando -> gravei {os.path.basename(ARQ_DIAG)} com o que os players devolvem.")
+    if canais and (em_falha or relatorio["tocando"] < max(3, len(canais) // 5)):
+        # amostra: ate 2 canais com HTTP erro + 1 sem link (ou o canal de sonda)
+        com_erro = [f_["id"] for f_ in em_falha if "sem link" not in f_["motivo"]][:2]
+        sem_link = [f_["id"] for f_ in em_falha if "sem link" in f_["motivo"]][:1]
+        amostra = com_erro + sem_link
+        if not amostra:
+            amostra = [c["id"] for c in canais][:3]
+        escrever_diagnostico(amostra, "(automatico: canais em falha)")
+        log(f"Canais em falha -> gravei {os.path.basename(ARQ_DIAG)} (amostra: {', '.join(amostra)}).")
     else:
         with open(ARQ_DIAG, "w", encoding="utf-8") as f_:
             f_.write("Sem diagnóstico: os canais estão tocando normalmente.\n")
