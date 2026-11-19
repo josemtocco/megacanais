@@ -40,6 +40,8 @@ jobs:
           done
 
       - name: Gerar e testar a lista
+        env:
+          IP_BRASIL: ${{ secrets.IP_BRASIL }}
         run: python atualizar_m3u.py
 
       - name: Publicar no repositório
@@ -72,5 +74,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: log-execucao
-          path: log_ultima_execucao.txt
+          path: |
+            log_ultima_execucao.txt
+            diagnostico_player.txt
           if-no-files-found: ignore
