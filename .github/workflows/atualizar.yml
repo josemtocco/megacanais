@@ -1,0 +1,76 @@
+name: Atualizar lista M3U
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"      # a cada 6 horas
+  workflow_dispatch:            # botão "Run workflow"
+  push:
+    branches: [main, master]
+    paths: ["atualizar_m3u.py", ".github/workflows/atualizar.yml"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: atualizar-m3u
+  cancel-in-progress: false
+
+jobs:
+  atualizar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Baixar o repositório
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Preparar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar ffmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+
+      - name: Garantir que os arquivos de estado existam
+        run: |
+          for f in estado_canais.json fontes_site.json; do
+            [ -f "$f" ] || echo '{}' > "$f"
+          done
+
+      - name: Gerar e testar a lista
+        run: python atualizar_m3u.py
+
+      - name: Publicar no repositório
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          for tentativa in 1 2 3 4 5; do
+            git add -A -- megacanais.m3u megacanais_completo.m3u \
+                          estado_canais.json relatorio.json fontes_site.json \
+                          log_ultima_execucao.txt diagnostico_player.txt || true
+            if git diff --cached --quiet; then
+              echo "Nada mudou."; exit 0
+            fi
+            git commit -m "Lista atualizada em $(date -u '+%d/%m/%Y %H:%M UTC')"
+            if git pull --rebase=false -X ours --no-edit origin "${GITHUB_REF_NAME}" && \
+               git push origin "HEAD:${GITHUB_REF_NAME}"; then
+              echo "Publicado."; exit 0
+            fi
+            echo "Tentativa $tentativa falhou; regerando a lista..."
+            git rebase --abort || true
+            git merge --abort || true
+            git fetch origin "${GITHUB_REF_NAME}"
+            git reset --hard "origin/${GITHUB_REF_NAME}"
+            python atualizar_m3u.py || true
+          done
+          echo "Não foi possível publicar depois de 5 tentativas."; exit 1
+
+      - name: Guardar o log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: log-execucao
+          path: log_ultima_execucao.txt
+          if-no-files-found: ignore
